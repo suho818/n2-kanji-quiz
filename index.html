@@ -120,6 +120,8 @@ details .inner { padding: 0 18px 16px; display: grid; gap: 12px; }
 .toggle input { width: 20px; height: 20px; accent-color: var(--accent); }
 .note { margin: 0; font-size: 13px; color: var(--muted); }
 .note.warn { color: var(--pen); }
+.voice-row { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; font-size: 15px; }
+.voice-row select { min-width: 0; width: 100%; font: inherit; font-size: 14px; padding: 7px 8px; border-radius: 8px; border: 1px solid var(--rule); background: var(--sheet); color: var(--ink); }
 .reset { background: none; border: 0; padding: 0; font-size: 13px; color: var(--muted); text-decoration: underline; justify-self: start; }
 
 /* ---------- 문제 ---------- */
@@ -269,7 +271,13 @@ h2 { font-size: 16px; margin: 0; }
     <div class="inner">
       <label class="toggle" for="opt-auto">읽기 모드에서 답한 뒤 발음 자동 재생 <input type="checkbox" id="opt-auto"></label>
       <label class="toggle" for="opt-slow">조금 천천히 읽기 <input type="checkbox" id="opt-slow"></label>
-      <p class="note">발음은 이 기기의 일본어 음성으로 나와요. 무음 모드면 소리가 안 날 수 있어요.</p>
+      <label class="toggle" for="opt-kanji">한자로 읽혀서 억양 자연스럽게 <input type="checkbox" id="opt-kanji"></label>
+      <div class="voice-row">
+        <label for="opt-voice">음성</label>
+        <select id="opt-voice"></select>
+        <button class="slow" id="voice-test">미리 듣기</button>
+      </div>
+      <p class="note" id="voice-help">발음은 이 기기에 깔린 일본어 음성으로 나와요. 이름에 Natural · Online · Enhanced · Premium · Google 이 붙은 음성이 더 자연스러워요. 무음 모드면 소리가 안 날 수 있어요.</p>
       <button class="reset" id="reset">학습 기록 지우기</button>
       <p class="note" id="reset-msg" hidden></p>
     </div>
@@ -926,7 +934,7 @@ const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;",
 
 // ---- 저장 (이 브라우저에만) ----
 const KEY = "n2kanji-v1";
-const store = { s: {}, set: { mode: "read", range: "A", count: 20, auto: true, slow: false } };
+const store = { s: {}, set: { mode: "read", range: "A", count: 20, auto: true, slow: false, kanji: true, voice: "auto" } };
 try {
   const saved = JSON.parse(localStorage.getItem(KEY) || "null");
   if (saved) { store.s = saved.s || {}; Object.assign(store.set, saved.set || {}); }
@@ -954,22 +962,57 @@ const pool = k => WORDS.filter(RANGES.find(r => r.k === k).f);
 
 // ---- 발음 (Web Speech) ----
 const canSpeak = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
-let jaVoice = null, voicesChecked = false;
+let jaVoices = [], voicesChecked = false;
+// 품질 좋은 음성일수록 점수 높게 (Edge 신경망 음성, iOS 향상된 음질, Google 음성)
+function voiceScore(v) {
+  const n = v.name + " " + v.voiceURI;
+  let sc = 0;
+  if (/Natural|Neural|Online/i.test(n)) sc += 5;
+  if (/Premium/i.test(n)) sc += 4;
+  if (/Enhanced|拡張|高品質/i.test(n)) sc += 3;
+  if (/Google/i.test(n)) sc += 2;
+  if (/compact|Eloquence/i.test(n)) sc -= 1;
+  return sc;
+}
 function loadVoices() {
   try {
     const vs = speechSynthesis.getVoices();
-    jaVoice = vs.find(v => /^ja/i.test(v.lang)) || null;
+    jaVoices = vs.filter(v => /^ja/i.test(v.lang)).sort((a, b) => voiceScore(b) - voiceScore(a));
     if (vs.length) voicesChecked = true;
+    fillVoiceSelect();
     updateVoiceNote();
   } catch (e) {}
 }
 if (canSpeak) { loadVoices(); try { speechSynthesis.addEventListener("voiceschanged", loadVoices); } catch (e) {} }
+// "자동": 좋은 음성이 목록에 있으면 그걸, 없으면 기기 기본 일본어 음성(설정에서 고른 음성)에 맡김
+function currentVoice() {
+  if (store.set.voice && store.set.voice !== "auto") {
+    const v = jaVoices.find(v => v.voiceURI === store.set.voice || v.name === store.set.voice);
+    if (v) return v;
+  }
+  return jaVoices.find(v => voiceScore(v) > 0) || null;
+}
+function fillVoiceSelect() {
+  const sel = document.getElementById("opt-voice");
+  if (!sel) return;
+  const auto = jaVoices.find(v => voiceScore(v) > 0);
+  sel.innerHTML = `<option value="auto">자동 (${auto ? esc(auto.name) : "기기 기본 음성"})</option>` +
+    jaVoices.map(v => `<option value="${esc(v.voiceURI)}">${esc(v.name)}</option>`).join("");
+  sel.value = jaVoices.some(v => v.voiceURI === store.set.voice) ? store.set.voice : "auto";
+}
+// 사전 억양을 살리려고 한자로 읽게 하되, 음성이 다른 읽기로 읽을 수 있는 단어는 가나로
+const KANA_SPEAK = new Set(["辛い", "主", "良い", "怒る", "得る", "言い難い", "他人", "強火", "両国", "故郷"]);
+function speechText(w) {
+  if (!store.set.kanji || KANA_SPEAK.has(w.w) || w.w[0] === "～") return w.r;
+  return w.w;
+}
 function speak(text, slower) {
   if (!canSpeak) return;
   try {
     const u = new SpeechSynthesisUtterance(text);
     u.lang = "ja-JP";
-    if (jaVoice) u.voice = jaVoice;
+    const v = currentVoice();
+    if (v) u.voice = v;
     u.rate = slower ? 0.6 : (store.set.slow ? 0.8 : 0.95);
     if (speechSynthesis.speaking || speechSynthesis.pending) {
       speechSynthesis.cancel();
@@ -980,7 +1023,7 @@ function speak(text, slower) {
 function updateVoiceNote() {
   const n = $("#voice-note");
   if (!canSpeak) { n.textContent = "이 기기에서는 음성 재생이 안 돼서 듣기 모드를 쓸 수 없어요."; n.hidden = false; }
-  else if (voicesChecked && !jaVoice) { n.textContent = "이 기기에 일본어 음성이 없으면 발음이 이상하게 들릴 수 있어요."; n.hidden = false; }
+  else if (voicesChecked && !jaVoices.length) { n.textContent = "이 기기에 일본어 음성이 없으면 발음이 이상하게 들릴 수 있어요."; n.hidden = false; }
   else n.hidden = true;
 }
 
@@ -1022,6 +1065,8 @@ function renderHome() {
     `<label class="chip" for="ct-${n}">${n ? n + "문제" : "전부"}</label>`).join("");
   $("#opt-auto").checked = store.set.auto;
   $("#opt-slow").checked = store.set.slow;
+  $("#opt-kanji").checked = store.set.kanji;
+  fillVoiceSelect();
   updateVoiceNote();
 }
 document.addEventListener("change", e => {
@@ -1031,9 +1076,12 @@ document.addEventListener("change", e => {
   else if (t.name === "count") store.set.count = +t.value;
   else if (t.id === "opt-auto") store.set.auto = t.checked;
   else if (t.id === "opt-slow") store.set.slow = t.checked;
+  else if (t.id === "opt-kanji") store.set.kanji = t.checked;
+  else if (t.id === "opt-voice") { store.set.voice = t.value; speak("日本語能力試験、合格しましょう。"); }
   else return;
   save();
 });
+$("#voice-test").addEventListener("click", () => speak("詳細を確認してから、実践してください。"));
 $("#reset").addEventListener("click", () => {
   const m = $("#reset-msg");
   if (m.dataset.armed !== "1") {
@@ -1091,8 +1139,8 @@ function renderQ() {
       <button class="play" id="play" aria-label="다시 듣기">${SPEAKER}</button>
       <button class="slow" id="play-slow">천천히 듣기</button>
       <p class="listen-hint">소리가 안 나오면 무음 모드를 확인하세요</p></div>`;
-    $("#play").addEventListener("click", () => speak(w.r));
-    $("#play-slow").addEventListener("click", () => speak(w.r, true));
+    $("#play").addEventListener("click", () => speak(speechText(w)));
+    $("#play-slow").addEventListener("click", () => speak(speechText(w), true));
   }
 
   const labels = Q.opts.map(o => read ? o : o.w);
@@ -1103,7 +1151,7 @@ function renderQ() {
   $("#feedback").hidden = true;
   $("#next").hidden = true;
 
-  if (!read) speak(w.r);
+  if (!read) speak(speechText(w));
 }
 
 $("#opts").addEventListener("click", e => {
@@ -1136,12 +1184,12 @@ function answer(k) {
     <p class="mean">${esc(w.m)}</p>
     ${Q.mode === "listen" ? tagsHTML(w).replace('class="tags"', 'class="tags" style="justify-content:flex-start"') : ""}`;
   fb.hidden = false;
-  $("#say").addEventListener("click", () => speak(w.r));
+  $("#say").addEventListener("click", () => speak(speechText(w)));
 
   const nx = $("#next");
   nx.textContent = Q.i + 1 < Q.items.length ? "다음 문제" : "결과 보기";
   nx.hidden = false;
-  if (Q.mode === "read" && store.set.auto) speak(w.r);
+  if (Q.mode === "read" && store.set.auto) speak(speechText(w));
 }
 
 function next() {
@@ -1182,7 +1230,7 @@ function showResult() {
 }
 $("#r-wrong").addEventListener("click", e => {
   const b = e.target.closest(".say");
-  if (b) speak(Q.wrongItems[+b.dataset.i].r);
+  if (b) speak(speechText(Q.wrongItems[+b.dataset.i]));
 });
 $("#retry-wrong").addEventListener("click", () => startQuiz(shuffle(Q.wrongItems.slice()), Q.mode, Q.rangeKey));
 $("#retry-same").addEventListener("click", () => {
@@ -1196,7 +1244,7 @@ document.addEventListener("keydown", e => {
   if ($("#quiz").hidden || e.metaKey || e.ctrlKey || e.altKey) return;
   if (/^[1-4]$/.test(e.key)) answer(+e.key - 1);
   else if ((e.key === "Enter" || e.key === "ArrowRight") && Q && Q.answered) { e.preventDefault(); next(); }
-  else if (e.key.toLowerCase() === "r" && Q) speak(Q.items[Q.i].r);
+  else if (e.key.toLowerCase() === "r" && Q) speak(speechText(Q.items[Q.i]));
 });
 
 renderHome();
