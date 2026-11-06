@@ -217,6 +217,13 @@ details .inner { padding: 0 18px 16px; display: grid; gap: 12px; }
 .feedback { margin-top: 14px; display: grid; gap: 10px; }
 .verdict { font-size: 18px; font-weight: 700; color: var(--pen); display: flex; align-items: center; gap: 8px; }
 .verdict .sym { font-size: 22px; line-height: 1; }
+/* 찍어서 맞힌 문제를 오답노트로 보내는 버튼 */
+.guess { margin-left: auto; font: 600 13px/1.2 var(--font-ui); color: var(--muted); background: var(--sheet);
+  border: 1.5px solid var(--rule); border-radius: 999px; padding: 8px 12px; cursor: pointer; white-space: nowrap; }
+.guess:hover { border-color: var(--muted); color: var(--ink); }
+.guess[aria-pressed="true"] { color: var(--pen); border-color: var(--pen); background: color-mix(in srgb, var(--pen) 8%, var(--sheet)); }
+.verdict.guessed { color: var(--muted); }
+.wlist .gtag { font: 600 11.5px/1 var(--font-ui); color: var(--pen); border: 1px solid var(--pen); border-radius: 999px; padding: 3px 7px; align-self: center; }
 .answer { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; }
 .answer .w { font-family: var(--font-jp); font-size: 26px; font-weight: 700; }
 .answer .r { font-family: var(--font-jp); font-size: 20px; color: var(--accent); font-weight: 500; }
@@ -270,7 +277,8 @@ h2 { font-size: 16px; margin: 0; }
 .wlist .w { font-family: var(--font-jp); font-size: 21px; font-weight: 700; }
 .wlist .r { font-family: var(--font-jp); font-size: 16px; color: var(--accent); }
 .wlist .m { font-size: 13.5px; color: var(--muted); }
-.wlist .say { grid-row: span 2; grid-column: 2; }
+.wlist .top, .wlist .m { grid-column: 1; }
+.wlist .say { grid-row: 1 / span 2; grid-column: 2; }
 
 @media (max-width: 360px) {
   .word { font-size: 38px; }
@@ -3833,8 +3841,10 @@ function answer(k) {
   if (!Q || Q.answered) return;
   Q.answered = true;
   const w = Q.items[Q.i], ok = k === Q.correct;
+  const before = store.s[w.id] ? { ...store.s[w.id] } : null; // 찍음 표시를 되돌릴 때 쓰는 이전 기록
   record(w.id, ok);
-  Q.log.push({ w, ok });
+  const entry = { w, ok };
+  Q.log.push(entry);
 
   document.querySelectorAll(".opt").forEach((b, j) => {
     b.disabled = true;
@@ -3847,7 +3857,7 @@ function answer(k) {
   if (youSent) document.querySelectorAll(".onote").forEach(n => { n.hidden = false; });
   const fb = $("#feedback");
   fb.innerHTML = `
-    <div class="verdict">${ok ? '<span class="sym">○</span>정답' : `<span class="sym">／</span>오답 · 정답은 ${Q.correct + 1}번`}</div>
+    <div class="verdict" id="verdict">${ok ? '<span class="sym">○</span><span id="verdict-t">정답</span><button class="guess" id="guess" aria-pressed="false">찍어서 맞혔어요 · 오답노트로</button>' : `<span class="sym">／</span>오답 · 정답은 ${Q.correct + 1}번`}</div>
     ${!ok && Q.set === "hyoki" ? diffHTML(Q.opts[k], w) : ""}
     ${!ok && Q.set === "tango" ? tangoDiffHTML(Q.opts[k], w) : ""}
     ${!ok && (Q.set === "bun" || (Q.set === "you" && !youSent)) && typeof Q.opts[k] === "object" ? `<div class="diff">고른 답 <span class="jp" lang="ja">${esc(Q.opts[k].w)}</span> <span class="chosen-m">${esc(Q.opts[k].r !== Q.opts[k].w ? Q.opts[k].r + " · " : "")}${esc(Q.opts[k].m)}</span></div>` : ""}
@@ -3879,6 +3889,7 @@ function answer(k) {
     ${kanjiHTML(w)}`;
   fb.hidden = false;
   $("#say").addEventListener("click", () => speak(speechText(w)));
+  if ($("#guess")) $("#guess").addEventListener("click", () => toggleGuess(w, before, entry));
   if ($("#say-sent")) $("#say-sent").addEventListener("click", () => speak(Q.set === "you" ? youSentText(w) : Q.set === "bun" ? bunSentText(w) : Q.set === "ik" ? ikSentText(w) : sentText(w)));
 
   const nx = $("#next");
@@ -3889,6 +3900,19 @@ function answer(k) {
   if (Q.mode === "sent" && store.set.auto && Q.set === "bun" && SENTB[w.w]) speak(bunSentText(w));
   if (Q.mode === "sent" && store.set.auto && Q.set === "ik" && SENTI[ikKey(w)]) speak(ikSentText(w));
   if (youSent && store.set.auto) speak(youSentText(w));
+}
+
+// 찍어서 맞힌 문제: 오답으로 다시 기록해 오답노트에 넣기 (한 번 더 누르면 취소)
+function toggleGuess(w, before, entry) {
+  entry.guess = !entry.guess;
+  entry.ok = !entry.guess;
+  if (before) store.s[w.id] = { ...before }; else delete store.s[w.id];
+  record(w.id, entry.ok);
+  const b = $("#guess");
+  b.setAttribute("aria-pressed", String(entry.guess));
+  b.textContent = entry.guess ? "오답노트에 넣었어요 · 취소" : "찍어서 맞혔어요 · 오답노트로";
+  $("#verdict-t").textContent = entry.guess ? "찍어서 맞힘" : "정답";
+  $("#verdict").classList.toggle("guessed", entry.guess);
 }
 
 function next() {
@@ -3907,6 +3931,7 @@ function showResult() {
   const total = Q.log.length, right = Q.log.filter(x => x.ok).length;
   const pct = total ? Math.round(right / total * 100) : 0;
   Q.wrongItems = Q.log.filter(x => !x.ok).map(x => x.w);
+  const guessed = new Set(Q.log.filter(x => x.guess).map(x => x.w));
   $("#r-score").textContent = right;
   $("#r-total").textContent = `/ ${total}`;
   $("#r-pct").textContent = pct + "%";
@@ -3917,9 +3942,11 @@ function showResult() {
   const box = $("#r-wrong-box");
   if (Q.wrongItems.length) {
     box.hidden = false;
-    $("#r-wrong-title").textContent = `틀린 단어 ${Q.wrongItems.length}개`;
+    $("#r-wrong-title").textContent = guessed.size
+      ? `다시 볼 단어 ${Q.wrongItems.length}개 (찍은 것 ${guessed.size}개 포함)`
+      : `틀린 단어 ${Q.wrongItems.length}개`;
     $("#r-wrong").innerHTML = Q.wrongItems.map((w, i) => `<li>
-      <div class="top"><span class="w" lang="ja">${wordHTML(w)}</span><span class="r" lang="ja">${esc(w.r)}</span></div>
+      <div class="top"><span class="w" lang="ja">${wordHTML(w)}</span><span class="r" lang="ja">${esc(w.r)}</span>${guessed.has(w) ? '<span class="gtag">찍음</span>' : ""}</div>
       <span class="m">${esc(w.m)} · ${esc(yearsText(w))}</span>
       <button class="say" data-i="${i}" aria-label="${esc(w.w)} 발음 듣기">${SPEAKER}</button></li>`).join("");
   } else box.hidden = true;
